@@ -1,0 +1,19 @@
+Permission denied: 
+
+Local machine: 
+
+ls ~/.ssh        # find the .ssh location
+ssh-add ~/.ssh/id_rsa    #Add the local RSA key
+ssh-add -l    # verify the key added
+
+
+Remote server: 
+
+Copy the Local private key or SCP to teh /.ssh location
+eval $(ssh-agent)   #it will start the ssh agent owht the neccessary environment variables.
+ssh-add ~/.ssh/id_rsa
+ssh-add -l
+
+git pull
+
+....done
