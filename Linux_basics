@@ -1,0 +1,15 @@
+Here the Basics of Linux that every linux user should know. 
+
+
+Linux System: 
+
+cat /etc/*release               # Linux version or flavours
+uname -r                        # Kernel version
+uptime                          # How long system has been up
+cat /proc/cmdline               # Kernel parameters at the boot time
+vmstat 1 5                      # Virtual memory usage top 5 in every 1 sec
+mpstat 1 5                      # CPU usage top 5 in every 1 sec
+ps -ef                          # All the process those are running in the system
+ps -ef | awk '{print $1}' | sort | uniq -c      # Most used services by user
+pidstat 1 5                     # To check what services are executing in every 1 sec and top 5 services
+iostat -xz 1 5                  # Top 5 most cpu and disk used by the processes. 
