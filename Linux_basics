@@ -12,4 +12,6 @@ mpstat 1 5                      # CPU usage top 5 in every 1 sec
 ps -ef                          # All the process those are running in the system
 ps -ef | awk '{print $1}' | sort | uniq -c      # Most used services by user
 pidstat 1 5                     # To check what services are executing in every 1 sec and top 5 services
-iostat -xz 1 5                  # Top 5 most cpu and disk used by the processes. 
+iostat -xz 1 5                  # Top 5 most cpu and disk used by the processes
+sar -n DEV 1 5                  # Network usage and load of the system
+sar -n TCP,ETCP 1 5             # To check TCP packets and errors
