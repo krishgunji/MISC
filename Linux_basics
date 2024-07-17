@@ -15,3 +15,14 @@ pidstat 1 5                     # To check what services are executing in every 
 iostat -xz 1 5                  # Top 5 most cpu and disk used by the processes
 sar -n DEV 1 5                  # Network usage and load of the system
 sar -n TCP,ETCP 1 5             # To check TCP packets and errors
+ls /boot/vm*                    # To check the kernel old versions
+dpkg -l | wc -l                 # Number counts of packages installed in system
+dpkg -l | grep -i ssh           # To check the packages version and other details
+fdisk -l | grep -i vd           # To check the physical disk partition
+lsblk                           # To check the physical disk partition (alternative)
+blkid                           # Partition id and other details
+
+
+Networking IP and Ports:
+
+ipaddr                          # To check IP address and network interfaces
