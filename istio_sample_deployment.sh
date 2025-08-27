@@ -1,245 +1,195 @@
 #!/bin/bash
-
 set -e
 
-# VARIABLES
-LOCAL_REGISTRY="192.168.1.9:5000"
-NODE_APP_DIR="/root/sample-node-backend"
-FLUTTER_WEB_DIR="/root/sample_flutter_web"
-NODE_IMAGE_NAME="$LOCAL_REGISTRY/my-node-backend:latest"
-FLUTTER_IMAGE_NAME="$LOCAL_REGISTRY/my-flutter-web:latest"
+# Variables
+BACKEND_IMAGE="krishangunjyal/ecommerce-backend:latest"
+FRONTEND_IMAGE="krishangunjyal/ecommerce-frontend:latest"
 NAMESPACE="helix"
+KUBECTL_BIN="kubectl"
+KIND_BIN="kind"
 
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 
-echo "========== ENVIRONMENT SETUP AND DEPLOYMENT =========="
+echo "========== ENVIRONMENT & KUBERNETES SETUP =========="
 
-# Node.js
-if ! command_exists node; then
-  echo "Installing Node.js..."
-  curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
-  apt-get install -y nodejs
+# Check if kubectl is installed
+if ! command_exists $KUBECTL_BIN; then
+  echo "kubectl not found. Installing kubectl..."
+  curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+  install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
 else
-  echo "Node.js already installed."
+  echo "kubectl is already installed."
 fi
 
-# Flutter
-if ! command_exists flutter; then
-  echo "Installing Flutter SDK..."
-  cd /root
-  if [ ! -d flutter ]; then
-    git clone https://github.com/flutter/flutter.git -b stable
+# Check if Kubernetes cluster is reachable
+if ! kubectl version --short >/dev/null 2>&1; then
+  echo "No accessible Kubernetes cluster found."
+
+  # Check if kind is installed
+  if ! command_exists $KIND_BIN; then
+    echo "kind not found. Installing kind..."
+    curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64
+    chmod +x ./kind
+    mv ./kind /usr/local/bin/kind
+  else
+    echo "kind is already installed."
   fi
-  export PATH="/root/flutter/bin:$PATH"
-  /root/flutter/bin/flutter doctor
+
+  # Create kind cluster
+  echo "Creating local Kubernetes cluster with kind..."
+  kind create cluster --name ecommerce-cluster
 else
-  echo "Flutter already installed."
+  echo "Kubernetes cluster is accessible."
 fi
 
-# Istio CLI
+# Create namespace if not exists
+if ! kubectl get namespace $NAMESPACE >/dev/null 2>&1; then
+  echo "Creating namespace $NAMESPACE"
+  kubectl create namespace $NAMESPACE
+fi
+
+echo "========== DEPLOYING APPS WITH ISTIO =========="
+
+# Istioctl install check
 if ! command_exists istioctl; then
   echo "Installing Istio CLI..."
   curl -L https://istio.io/downloadIstio | sh -
   cd istio-*
   export PATH="$PWD/bin:$PATH"
-  cd /root
+  cd /
 else
   echo "Istio CLI already installed."
 fi
 
-# Node backend files
-if [ ! -f "$NODE_APP_DIR/index.js" ]; then
-  echo "Creating sample Node.js backend app..."
-  mkdir -p $NODE_APP_DIR
-  cat >$NODE_APP_DIR/index.js <<EOF
-const express = require('express');
-const app = express();
-const port = 3000;
-app.get('/api/hello', (req, res) => { res.json({ message: 'Hello from Node.js backend!' }); });
-app.listen(port, () => { console.log(\`Backend listening at http://localhost:\${port}\`); });
-EOF
-  cat >$NODE_APP_DIR/package.json <<EOF
-{ "name": "sample-node-backend", "version": "1.0.0", "main": "index.js",
-  "dependencies": { "express": "^4.18.2" } }
-EOF
-else
-  echo "Node.js backend files present."
-fi
-
-# Flutter app files
-if [ ! -d "$FLUTTER_WEB_DIR" ]; then
-  echo "Creating sample Flutter web app..."
-  cd /root
-  flutter create sample_flutter_web
-  cat > $FLUTTER_WEB_DIR/lib/main.dart <<EOF
-import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-import 'dart:convert';
-void main() { runApp(const MyApp()); }
-class MyApp extends StatelessWidget { const MyApp({super.key});
-  @override Widget build(BuildContext context) {return MaterialApp(
-    title: 'Flutter Web with Backend',
-    home: Scaffold(appBar: AppBar(title: const Text('Flutter Web + Node.js Backend')),
-    body: const Center(child: BackendResponseWidget()),),);}}
-class BackendResponseWidget extends StatefulWidget { const BackendResponseWidget({super.key});
-  @override _BackendResponseWidgetState createState() => _BackendResponseWidgetState(); }
-class _BackendResponseWidgetState extends State<BackendResponseWidget> {
-  String _response = 'Loading...';
-  @override void initState() { super.initState(); fetchBackendResponse(); }
-  Future<void> fetchBackendResponse() async {
-    try { final url = Uri.parse('/api/hello'); final res = await http.get(url);
-      if (res.statusCode == 200) { final data = json.decode(res.body); setState(() { _response = data['message']; }); }
-      else { setState(() { _response = 'Failed to load data'; }); }
-    } catch (e) { setState(() { _response = 'Error: \$e'; }); }
-  }
-  @override Widget build(BuildContext context) { return Text(_response); }
-}
-EOF
-else
-  echo "Flutter web app already exists."
-fi
-
-# Add http package to flutter (if missing)
-if ! grep -q 'http:' "$FLUTTER_WEB_DIR/pubspec.yaml"; then
-  echo "Adding http dependency to Flutter pubspec.yaml..."
-  sed -i '/dependencies:/a\  http: ^0.13.6' $FLUTTER_WEB_DIR/pubspec.yaml
-fi
-cd $FLUTTER_WEB_DIR
-flutter pub get
-flutter config --enable-web
-flutter build web
-
-# Dockerfiles
-if [ ! -f "$NODE_APP_DIR/Dockerfile" ]; then
-  echo "Creating Dockerfile for Node.js..."
-  cat > $NODE_APP_DIR/Dockerfile <<EOF
-FROM node:18-alpine
-WORKDIR /app
-COPY package*.json ./
-RUN npm install
-COPY . .
-EXPOSE 3000
-CMD ["node", "index.js"]
-EOF
-fi
-if [ ! -f "$FLUTTER_WEB_DIR/Dockerfile" ]; then
-  echo "Creating Dockerfile for Flutter Web..."
-  cat > $FLUTTER_WEB_DIR/Dockerfile <<EOF
-FROM nginx:alpine
-COPY build/web /usr/share/nginx/html
-EXPOSE 80
-CMD ["nginx", "-g", "daemon off;"]
-EOF
-fi
-
-# Build Docker images
-echo "Building Docker images..."
-docker build -t $NODE_IMAGE_NAME $NODE_APP_DIR
-docker build -t $FLUTTER_IMAGE_NAME $FLUTTER_WEB_DIR
-
-# Start local Docker registry if needed
-if ! docker ps -q -f name=registry | grep .; then
-  echo "Starting local Docker registry..."
-  docker run -d -p 5000:5000 --restart=always --name registry registry:2
-else
-  echo "Local Docker registry already running."
-fi
-
-# Push Docker images
-echo "Pushing Docker images to local registry..."
-docker push $NODE_IMAGE_NAME
-docker push $FLUTTER_IMAGE_NAME
-
-# Istio install
-echo "Installing Istio control plane if needed (idempotent)..."
+# Istio install (demo profile, idempotent)
+echo "Installing Istio control plane..."
 istioctl install --set profile=demo -y
 
-# Change ingressgateway service to NodePort
-echo "Changing istio-ingressgateway Service type to NodePort..."
+# Patch istio ingressgateway to NodePort for kind/local access
+echo "Setting istio-ingressgateway Service to NodePort..."
 kubectl -n istio-system patch svc istio-ingressgateway -p '{"spec": {"type": "NodePort"}}'
 
-# Enable Istio auto-injection
+# Enable automatic sidecar injection on namespace
 kubectl label namespace $NAMESPACE istio-injection=enabled --overwrite
 
-# Deploy app and Istio networking
+# Deploy ecommerce backend and frontend apps and Istio routing
 cat <<EOF | kubectl apply -f -
 apiVersion: apps/v1
 kind: Deployment
-metadata: { name: node-backend, namespace: $NAMESPACE }
+metadata:
+  name: ecommerce-backend
+  namespace: $NAMESPACE
 spec:
   replicas: 2
-  selector: { matchLabels: { app: node-backend } }
+  selector:
+    matchLabels:
+      app: ecommerce-backend
   template:
-    metadata: { labels: { app: node-backend } }
+    metadata:
+      labels:
+        app: ecommerce-backend
     spec:
       containers:
-      - name: node-backend
-        image: $NODE_IMAGE_NAME
-        ports: [ { containerPort: 3000 } ]
+      - name: ecommerce-backend
+        image: $BACKEND_IMAGE
+        ports:
+        - containerPort: 5000
 ---
 apiVersion: v1
 kind: Service
-metadata: { name: node-backend, namespace: $NAMESPACE }
+metadata:
+  name: ecommerce-backend
+  namespace: $NAMESPACE
 spec:
-  selector: { app: node-backend }
-  ports: [ { protocol: TCP, port: 80, targetPort: 3000 } ]
+  selector:
+    app: ecommerce-backend
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 5000
 ---
 apiVersion: apps/v1
 kind: Deployment
-metadata: { name: flutter-web, namespace: $NAMESPACE }
+metadata:
+  name: ecommerce-frontend
+  namespace: $NAMESPACE
 spec:
   replicas: 2
-  selector: { matchLabels: { app: flutter-web } }
+  selector:
+    matchLabels:
+      app: ecommerce-frontend
   template:
-    metadata: { labels: { app: flutter-web } }
+    metadata:
+      labels:
+        app: ecommerce-frontend
     spec:
       containers:
-      - name: flutter-web
-        image: $FLUTTER_IMAGE_NAME
-        ports: [ { containerPort: 80 } ]
+      - name: ecommerce-frontend
+        image: $FRONTEND_IMAGE
+        ports:
+        - containerPort: 80
 ---
 apiVersion: v1
 kind: Service
-metadata: { name: flutter-web, namespace: $NAMESPACE }
+metadata:
+  name: ecommerce-frontend
+  namespace: $NAMESPACE
 spec:
-  selector: { app: flutter-web }
-  ports: [ { protocol: TCP, port: 80, targetPort: 80 } ]
+  selector:
+    app: ecommerce-frontend
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
 ---
 apiVersion: networking.istio.io/v1beta1
 kind: Gateway
-metadata: { name: sample-app-gateway, namespace: $NAMESPACE }
+metadata:
+  name: ecommerce-gateway
+  namespace: $NAMESPACE
 spec:
-  selector: { istio: ingressgateway }
+  selector:
+    istio: ingressgateway
   servers:
-  - port: { number: 80, name: http, protocol: HTTP }
-    hosts: [ "*" ]
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - "*"
 ---
 apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
-metadata: { name: sample-app, namespace: $NAMESPACE }
+metadata:
+  name: ecommerce-virtualservice
+  namespace: $NAMESPACE
 spec:
-  hosts: [ "*" ]
-  gateways: [ sample-app-gateway ]
+  hosts:
+  - "*"
+  gateways:
+  - ecommerce-gateway
   http:
-  - match: [ { uri: { prefix: "/api" } } ]
+  - match:
+    - uri:
+        prefix: "/api"
     route:
     - destination:
-        host: node-backend.$NAMESPACE.svc.cluster.local
-        port: { number: 80 }
+        host: ecommerce-backend.$NAMESPACE.svc.cluster.local
+        port:
+          number: 80
   - route:
     - destination:
-        host: flutter-web.$NAMESPACE.svc.cluster.local
-        port: { number: 80 }
+        host: ecommerce-frontend.$NAMESPACE.svc.cluster.local
+        port:
+          number: 80
 EOF
 
-echo "Fetching Node IP and Istio ingressgateway NodePort..."
-# Uses first worker node's InternalIP and 80 NodePort
+# Fetch node IP and NodePort to access services
 NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
 NODE_PORT=$(kubectl -n istio-system get svc istio-ingressgateway -o jsonpath='{.spec.ports[?(@.port==80)].nodePort}')
 
-echo "======================================================"
-echo "App frontend:  http://$NODE_IP:$NODE_PORT/"
-echo "API endpoint:  http://$NODE_IP:$NODE_PORT/api/hello"
-echo "Deployment complete. Access your application above!"
-controlplane:~$ ^C
-controlplane:~$ 
+echo "=========================================================="
+echo "Access your frontend app at: http://$NODE_IP:$NODE_PORT/"
+echo "Access backend API at:       http://$NODE_IP:$NODE_PORT/api/hello"
+echo "Kubernetes and app deployment completed successfully."
+ubuntu:~$ 
