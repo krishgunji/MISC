@@ -24,7 +24,6 @@ fi
 # Check if Kubernetes cluster is reachable
 if ! kubectl version --short >/dev/null 2>&1; then
   echo "No accessible Kubernetes cluster found."
-
   # Check if kind is installed
   if ! command_exists $KIND_BIN; then
     echo "kind not found. Installing kind..."
@@ -34,7 +33,6 @@ if ! kubectl version --short >/dev/null 2>&1; then
   else
     echo "kind is already installed."
   fi
-
   # Create kind cluster
   echo "Creating local Kubernetes cluster with kind..."
   kind create cluster --name ecommerce-cluster
@@ -48,7 +46,7 @@ if ! kubectl get namespace $NAMESPACE >/dev/null 2>&1; then
   kubectl create namespace $NAMESPACE
 fi
 
-echo "========== DEPLOYING APPS WITH ISTIO =========="
+echo "========== DEPLOYING APPS WITH ISTIO AND MONGODB =========="
 
 # Istioctl install check
 if ! command_exists istioctl; then
@@ -72,6 +70,54 @@ kubectl -n istio-system patch svc istio-ingressgateway -p '{"spec": {"type": "No
 # Enable automatic sidecar injection on namespace
 kubectl label namespace $NAMESPACE istio-injection=enabled --overwrite
 
+# Deploy MongoDB StatefulSet and Service
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo
+  namespace: $NAMESPACE
+spec:
+  ports:
+  - port: 27017
+    targetPort: 27017
+  selector:
+    app: mongo
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mongo
+  namespace: $NAMESPACE
+spec:
+  serviceName: "mongo"
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mongo
+  template:
+    metadata:
+      labels:
+        app: mongo
+    spec:
+      containers:
+      - name: mongo
+        image: mongo:6.0
+        ports:
+        - containerPort: 27017
+        volumeMounts:
+        - name: mongo-persistent-storage
+          mountPath: /data/db
+  volumeClaimTemplates:
+  - metadata:
+      name: mongo-persistent-storage
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 5Gi
+EOF
+
 # Deploy ecommerce backend and frontend apps and Istio routing
 cat <<EOF | kubectl apply -f -
 apiVersion: apps/v1
@@ -94,6 +140,9 @@ spec:
         image: $BACKEND_IMAGE
         ports:
         - containerPort: 5000
+        env:
+        - name: MONGO_URI
+          value: "mongodb://mongo.$NAMESPACE.svc.cluster.local:27017/ecommerceDB"
 ---
 apiVersion: v1
 kind: Service
@@ -104,9 +153,9 @@ spec:
   selector:
     app: ecommerce-backend
   ports:
-    - protocol: TCP
-      port: 80
-      targetPort: 5000
+  - protocol: TCP
+    port: 80
+    targetPort: 5000
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -138,9 +187,9 @@ spec:
   selector:
     app: ecommerce-frontend
   ports:
-    - protocol: TCP
-      port: 80
-      targetPort: 80
+  - protocol: TCP
+    port: 80
+    targetPort: 80
 ---
 apiVersion: networking.istio.io/v1beta1
 kind: Gateway
@@ -191,5 +240,5 @@ NODE_PORT=$(kubectl -n istio-system get svc istio-ingressgateway -o jsonpath='{.
 echo "=========================================================="
 echo "Access your frontend app at: http://$NODE_IP:$NODE_PORT/"
 echo "Access backend API at:       http://$NODE_IP:$NODE_PORT/api/hello"
-echo "Kubernetes and app deployment completed successfully."
-ubuntu:~$ 
+echo "MongoDB service URI:        mongodb://mongo.$NAMESPACE.svc.cluster.local:27017/ecommerceDB"
+echo "Deployment completed successfully."
